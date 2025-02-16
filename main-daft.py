@@ -2,11 +2,14 @@ import os
 import glob
 import pyarrow.parquet as pq
 import pyarrow as pa
-import polars as pl  # using Polars instead of Daft
+import daft  # type: ignore
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema, NestedField, IntegerType, StringType, FloatType
 from pyiceberg.partitioning import PartitionSpec, PartitionField, INITIAL_PARTITION_SPEC_ID, PARTITION_FIELD_ID_START
 from pyiceberg.transforms import IdentityTransform
+
+daft.context.set_runner_native()
+
 
 class IcebergPipeline:
     def __init__(self, parquet_input="large_dataset.parquet",
@@ -57,17 +60,8 @@ class IcebergPipeline:
     
     def run_pipeline(self):
         # Read the input Parquet file using Polars
-        df = pl.read_parquet(self.parquet_input)
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Partition the data by the specified column (e.g. "group")
-        unique_vals = df.select(self.partition_field_name).unique().to_series().to_list()
-        for val in unique_vals:
-            partition_df = df.filter(pl.col(self.partition_field_name) == val)
-            partition_dir = os.path.join(self.output_dir, f"{self.partition_field_name}={val}")
-            os.makedirs(partition_dir, exist_ok=True)
-            output_file = os.path.join(partition_dir, "data.parquet")
-            partition_df.write_parquet(output_file)
+        df = daft.read_parquet(self.parquet_input)
+        df.write_parquet(self.output_dir, partition_cols=[self.partition_field_name])
         
         print(f"Partitioned Parquet files written to: {self.output_dir}")
         
