@@ -1,0 +1,4 @@
+getdaft
+pyarrow
+duckdb
+pyiceberg
