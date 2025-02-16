@@ -2,3 +2,4 @@ getdaft
 pyarrow
 duckdb
 pyiceberg
+polars
