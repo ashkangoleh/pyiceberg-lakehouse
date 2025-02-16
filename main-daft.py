@@ -2,7 +2,7 @@ import os
 import glob
 import pyarrow.parquet as pq
 import pyarrow as pa
-import daft  # type: ignore
+import polars as pl  # using Polars instead of Daft
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema, NestedField, IntegerType, StringType, FloatType
 from pyiceberg.partitioning import PartitionSpec, PartitionField, INITIAL_PARTITION_SPEC_ID, PARTITION_FIELD_ID_START
@@ -56,11 +56,22 @@ class IcebergPipeline:
         return Schema(*fields)
     
     def run_pipeline(self):
-        daft.context.set_runner_native()
-        df = daft.read_parquet(self.parquet_input)
+        # Read the input Parquet file using Polars
+        df = pl.read_parquet(self.parquet_input)
         os.makedirs(self.output_dir, exist_ok=True)
-        df.write_parquet(self.output_dir, partition_cols=[self.partition_field_name])
+        
+        # Partition the data by the specified column (e.g. "group")
+        unique_vals = df.select(self.partition_field_name).unique().to_series().to_list()
+        for val in unique_vals:
+            partition_df = df.filter(pl.col(self.partition_field_name) == val)
+            partition_dir = os.path.join(self.output_dir, f"{self.partition_field_name}={val}")
+            os.makedirs(partition_dir, exist_ok=True)
+            output_file = os.path.join(partition_dir, "data.parquet")
+            partition_df.write_parquet(output_file)
+        
         print(f"Partitioned Parquet files written to: {self.output_dir}")
+        
+        # Load or create the catalog
         catalog = self.get_catalog()
         os.makedirs(self.catalog_config["warehouse"], exist_ok=True)
         schema = self.infer_schema()
@@ -71,27 +82,36 @@ class IcebergPipeline:
                 break
         if pfid is None:
             raise ValueError(f"Partition field '{self.partition_field_name}' not found in inferred schema.")
-        partition_field = PartitionField(name=self.partition_field_name,
-                                         source_id=pfid,
-                                         field_id=PARTITION_FIELD_ID_START,
-                                         transform=IdentityTransform())
+        
+        partition_field = PartitionField(
+            name=self.partition_field_name,
+            source_id=pfid,
+            field_id=PARTITION_FIELD_ID_START,
+            transform=IdentityTransform()
+        )
         spec = PartitionSpec(spec_id=INITIAL_PARTITION_SPEC_ID, fields=(partition_field,))
+        
         try:
             catalog.create_namespace(self.namespace)
             print(f"Namespace '{self.namespace}' created.")
         except Exception as e:
             print(f"Namespace '{self.namespace}' may already exist: {e}")
+        
         table_identifier = f"{self.namespace}.{self.table_name}"
         table = catalog.create_table(table_identifier, schema=schema, partition_spec=spec)
         print(f"Iceberg table {table_identifier} created with partition spec on '{self.partition_field_name}'.")
+        
         parquet_files = glob.glob(os.path.join(self.output_dir, "**", "*.parquet"), recursive=True)
         print(f"Found {len(parquet_files)} Parquet files to register.")
+        
+        # Define the forced schema for reading files
         read_schema = pa.schema([
             pa.field("id", pa.int32(), nullable=False),
             pa.field("group", pa.string(), nullable=False),
             pa.field("value1", pa.float32(), nullable=False),
             pa.field("value2", pa.int32(), nullable=False)
         ])
+        
         for file_path in parquet_files:
             try:
                 pf = pq.ParquetFile(file_path)
@@ -99,14 +119,18 @@ class IcebergPipeline:
                 gf = arrow_table.schema.field(self.partition_field_name)
                 if pa.types.is_dictionary(gf.type):
                     idx = arrow_table.schema.get_field_index(self.partition_field_name)
-                    arrow_table = arrow_table.set_column(idx, self.partition_field_name,
-                                                         arrow_table[self.partition_field_name].dictionary_decode())
+                    arrow_table = arrow_table.set_column(
+                        idx, 
+                        self.partition_field_name,
+                        arrow_table[self.partition_field_name].dictionary_decode()
+                    )
                 arrow_table = arrow_table.cast(read_schema)
             except Exception as e:
                 print(f"Error reading or casting file {file_path}: {e}")
                 continue
             table.append(arrow_table)
             print(f"Appended data from file: {file_path} (rows: {arrow_table.num_rows}, size: {os.path.getsize(file_path)} bytes)")
+        
         print("\n--- Iceberg Table Metadata ---")
         print("Schema:")
         print(table.schema())
