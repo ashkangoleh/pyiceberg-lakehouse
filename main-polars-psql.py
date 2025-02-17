@@ -32,7 +32,7 @@ class IcebergPipeline:
 
     def get_catalog(self):
         config = self.catalog_config.copy()
-        catalog_type = config.pop("catalog_type", "sqlite")
+        catalog_type = config.pop("catalog_type", "sql")
         return load_catalog(catalog_type, **config)
     
     def infer_schema(self):
@@ -146,6 +146,12 @@ class IcebergPipeline:
             print(snap)
 
 if __name__ == "__main__":
-    pipeline = IcebergPipeline()
+    catalog_config = {
+        "catalog_type": "sql",
+        "uri": "postgresql+psycopg2://root:1@localhost/catalog_db",
+        "init_catalog_tables": "true",
+        "warehouse": "iceberg_warehouse"
+    }
+    pipeline = IcebergPipeline(catalog_config=catalog_config)
     pipeline.run_pipeline()
     pipeline.print_snapshot_history()

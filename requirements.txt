@@ -1,5 +1,8 @@
-getdaft
+getdaft[all]
+getdaft[ray]
 pyarrow
 duckdb
 pyiceberg
+pyiceberg[sql-sqlite]
+pyiceberg[sql-postgres]
 polars

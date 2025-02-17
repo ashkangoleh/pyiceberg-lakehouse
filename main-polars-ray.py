@@ -7,6 +7,9 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema, NestedField, IntegerType, StringType, FloatType
 from pyiceberg.partitioning import PartitionSpec, PartitionField, INITIAL_PARTITION_SPEC_ID, PARTITION_FIELD_ID_START
 from pyiceberg.transforms import IdentityTransform
+import ray
+
+ray.init(address="ray://localhost:10001")
 
 class IcebergPipeline:
     def __init__(self, parquet_input="large_dataset.parquet",
@@ -144,8 +147,14 @@ class IcebergPipeline:
         print("\nSnapshot History:")
         for snap in self.table.history():
             print(snap)
-
-if __name__ == "__main__":
+@ray.remote
+def run_pipeline_remote():
     pipeline = IcebergPipeline()
     pipeline.run_pipeline()
     pipeline.print_snapshot_history()
+    return "Pipeline execution complete."
+
+if __name__ == "__main__":
+    # Execute the pipeline remotely.
+    result = ray.get(run_pipeline_remote.remote())
+    print(result)

@@ -23,7 +23,7 @@ def main():
     con.execute("LOAD iceberg;")
     query = f"""
         SELECT *
-        FROM iceberg_scan('{metadata_file_duckdb}') limit 10;
+        FROM iceberg_scan('{metadata_file_duckdb}') order by id desc limit 1 ;
     """
     try:
         df = con.execute(query).fetchdf()

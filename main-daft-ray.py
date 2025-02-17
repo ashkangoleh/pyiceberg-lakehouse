@@ -1,12 +1,19 @@
 import os
 import glob
+import shutil
 import pyarrow.parquet as pq
 import pyarrow as pa
-import polars as pl  # using Polars instead of Daft
+import daft  # type: ignore
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema, NestedField, IntegerType, StringType, FloatType
 from pyiceberg.partitioning import PartitionSpec, PartitionField, INITIAL_PARTITION_SPEC_ID, PARTITION_FIELD_ID_START
 from pyiceberg.transforms import IdentityTransform
+import ray
+
+# Initialize Ray and set the Daft runner address.
+# ray.init(address="ray://localhost:10001")
+daft.context.set_runner_ray(address="ray://localhost:10001")
+# daft.context.set_runner_ray("ray://ray-head:10001") # container based
 
 class IcebergPipeline:
     def __init__(self, parquet_input="large_dataset.parquet",
@@ -14,8 +21,7 @@ class IcebergPipeline:
                  catalog_config=None,
                  namespace="default", 
                  table_name="my_iceberg_table",
-                 partition_field_name="group"
-                ):
+                 partition_field_name="group"):
         self.parquet_input = parquet_input
         self.output_dir = output_dir
         self.namespace = namespace
@@ -56,25 +62,22 @@ class IcebergPipeline:
         return Schema(*fields)
     
     def run_pipeline(self):
-        # Read the input Parquet file using Polars
-        df = pl.read_parquet(self.parquet_input)
+        # Clear the output directory to avoid duplicate processing.
+        if os.path.exists(self.output_dir):
+            shutil.rmtree(self.output_dir)
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Partition the data by the specified column (e.g. "group")
-        unique_vals = df.select(self.partition_field_name).unique().to_series().to_list()
-        for val in unique_vals:
-            partition_df = df.filter(pl.col(self.partition_field_name) == val)
-            partition_dir = os.path.join(self.output_dir, f"{self.partition_field_name}={val}")
-            os.makedirs(partition_dir, exist_ok=True)
-            output_file = os.path.join(partition_dir, "data.parquet")
-            partition_df.write_parquet(output_file)
-
+        # Use Daft to read the input Parquet file and write partitioned files.
+        df = daft.read_parquet(self.parquet_input)
+        df.write_parquet(self.output_dir, partition_cols=[self.partition_field_name], compression="zstd")
         print(f"Partitioned Parquet files written to: {self.output_dir}")
-
-        # Load or create the catalog
+        
+        # Load or create the catalog.
         catalog = self.get_catalog()
         os.makedirs(self.catalog_config["warehouse"], exist_ok=True)
         schema = self.infer_schema()
+        
+        # Determine the field id for the partition field.
         pfid = None
         for field in schema.fields:
             if field.name == self.partition_field_name:
@@ -82,7 +85,7 @@ class IcebergPipeline:
                 break
         if pfid is None:
             raise ValueError(f"Partition field '{self.partition_field_name}' not found in inferred schema.")
-
+        
         partition_field = PartitionField(
             name=self.partition_field_name,
             source_id=pfid,
@@ -90,21 +93,27 @@ class IcebergPipeline:
             transform=IdentityTransform()
         )
         spec = PartitionSpec(spec_id=INITIAL_PARTITION_SPEC_ID, fields=(partition_field,))
-
+        
+        # Create the namespace (if it doesn't exist already).
         try:
             catalog.create_namespace(self.namespace)
             print(f"Namespace '{self.namespace}' created.")
         except Exception as e:
             print(f"Namespace '{self.namespace}' may already exist: {e}")
-
+        
         table_identifier = f"{self.namespace}.{self.table_name}"
-        table = catalog.create_table(table_identifier, schema=schema, partition_spec=spec)
+        table = catalog.create_table(
+            table_identifier,
+            schema=schema, 
+            partition_spec=spec,
+            properties={"write.target-file-size-bytes": "536870912"}  # target ~512MB files
+        )
         print(f"Iceberg table {table_identifier} created with partition spec on '{self.partition_field_name}'.")
-
+        
         parquet_files = glob.glob(os.path.join(self.output_dir, "**", "*.parquet"), recursive=True)
         print(f"Found {len(parquet_files)} Parquet files to register.")
-
-        # Define the forced schema for reading files
+        
+        # Define the forced schema for reading files.
         read_schema = pa.schema([
             pa.field("id", pa.int32(), nullable=False),
             pa.field("group", pa.string(), nullable=False),
@@ -145,7 +154,15 @@ class IcebergPipeline:
         for snap in self.table.history():
             print(snap)
 
-if __name__ == "__main__":
+@ray.remote
+def run_pipeline_remote():
     pipeline = IcebergPipeline()
     pipeline.run_pipeline()
     pipeline.print_snapshot_history()
+    return "Pipeline execution complete."
+
+if __name__ == "__main__":
+    # Execute the pipeline remotely.
+    result = ray.get(run_pipeline_remote.remote())
+    print(result)
+

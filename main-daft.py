@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 import pyarrow.parquet as pq
 import pyarrow as pa
 import daft  # type: ignore
@@ -17,8 +18,7 @@ class IcebergPipeline:
                  catalog_config=None,
                  namespace="default", 
                  table_name="my_iceberg_table",
-                 partition_field_name="group"
-                ):
+                 partition_field_name="group"):
         self.parquet_input = parquet_input
         self.output_dir = output_dir
         self.namespace = namespace
@@ -59,16 +59,22 @@ class IcebergPipeline:
         return Schema(*fields)
     
     def run_pipeline(self):
-        # Read the input Parquet file using Polars
-        df = daft.read_parquet(self.parquet_input)
-        df.write_parquet(self.output_dir, partition_cols=[self.partition_field_name])
+        # Clear the output directory to avoid duplicate processing.
+        if os.path.exists(self.output_dir):
+            shutil.rmtree(self.output_dir)
+        os.makedirs(self.output_dir, exist_ok=True)
         
+        # Use Daft to read the input Parquet file and write partitioned files.
+        df = daft.read_parquet(self.parquet_input)
+        df.write_parquet(self.output_dir, partition_cols=[self.partition_field_name], compression="zstd")
         print(f"Partitioned Parquet files written to: {self.output_dir}")
         
-        # Load or create the catalog
+        # Load or create the catalog.
         catalog = self.get_catalog()
         os.makedirs(self.catalog_config["warehouse"], exist_ok=True)
         schema = self.infer_schema()
+        
+        # Determine the field id for the partition field.
         pfid = None
         for field in schema.fields:
             if field.name == self.partition_field_name:
@@ -85,6 +91,7 @@ class IcebergPipeline:
         )
         spec = PartitionSpec(spec_id=INITIAL_PARTITION_SPEC_ID, fields=(partition_field,))
         
+        # Create the namespace (if it doesn't exist already).
         try:
             catalog.create_namespace(self.namespace)
             print(f"Namespace '{self.namespace}' created.")
@@ -92,13 +99,18 @@ class IcebergPipeline:
             print(f"Namespace '{self.namespace}' may already exist: {e}")
         
         table_identifier = f"{self.namespace}.{self.table_name}"
-        table = catalog.create_table(table_identifier, schema=schema, partition_spec=spec)
+        table = catalog.create_table(
+            table_identifier,
+            schema=schema, 
+            partition_spec=spec,
+            properties={"write.target-file-size-bytes": "536870912"}  # target ~512MB files
+        )
         print(f"Iceberg table {table_identifier} created with partition spec on '{self.partition_field_name}'.")
         
         parquet_files = glob.glob(os.path.join(self.output_dir, "**", "*.parquet"), recursive=True)
         print(f"Found {len(parquet_files)} Parquet files to register.")
         
-        # Define the forced schema for reading files
+        # Define the forced schema for reading files.
         read_schema = pa.schema([
             pa.field("id", pa.int32(), nullable=False),
             pa.field("group", pa.string(), nullable=False),
@@ -130,14 +142,6 @@ class IcebergPipeline:
         print(table.schema())
         self.table = table
         self.catalog = catalog
-
-    def print_snapshot_history(self):
-        if not hasattr(self, "table"):
-            print("Table not loaded. Run run_pipeline() first.")
-            return
-        print("\nSnapshot History:")
-        for snap in self.table.history():
-            print(snap)
 
 if __name__ == "__main__":
     pipeline = IcebergPipeline()

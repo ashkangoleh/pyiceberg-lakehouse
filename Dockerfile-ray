@@ -1,0 +1,40 @@
+# Base image for Python 3.11
+ARG BASE_IMAGE=rayproject/ray:2.42.1-py311
+
+# Use the provided base image
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Set environment variables for Python
+ENV PATH "/home/ray/anaconda3/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Ensure correct timezone and locale settings
+ENV TZ=UTC
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+
+# Add sudo support and create the "ray" user
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends sudo tzdata \
+    && ( id -u ray || useradd -ms /bin/bash -d /home/ray ray --uid 1000 --gid 100 ) \
+    && usermod -aG sudo ray \
+    && echo 'ray ALL=NOPASSWD: ALL' >> /etc/sudoers \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY ./requirements.txt .
+# Install required Python libraries
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Set working directory
+WORKDIR /app
+
+# Expose ports required by Ray
+EXPOSE 8265 6379 10001
+
+# Define a default command (optional)
+CMD ["python"]
