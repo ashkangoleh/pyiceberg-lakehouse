@@ -23,10 +23,10 @@ def main():
     con.execute("LOAD iceberg;")
     query = f"""
         SELECT *
-        FROM iceberg_scan('{metadata_file_duckdb}') order by id desc limit 1 ;
+        FROM iceberg_scan('{metadata_file_duckdb}');
     """
     try:
-        df = con.execute(query).fetchdf()
+        df = con.execute(query).arrow()
         print("Iceberg Table Query Result:")
         print(df)
     except Exception as e:

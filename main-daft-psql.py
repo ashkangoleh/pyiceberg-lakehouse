@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 import pyarrow.parquet as pq
 import pyarrow as pa
 import daft  # type: ignore
@@ -18,6 +19,25 @@ class IcebergPipeline:
                  namespace="default", 
                  table_name="my_iceberg_table",
                  partition_field_name="group"):
+        """
+        Initialize an IcebergPipeline.
+
+        Parameters
+        ----------
+        parquet_input : str, optional
+            Input Parquet file, by default "large_dataset.parquet"
+        output_dir : str, optional
+            Output directory for partitioned Parquet files, by default "./output_partitioned_parquet"
+        catalog_config : dict, optional
+            Configuration for the Iceberg catalog, by default None (uses default values)
+        namespace : str, optional
+            Namespace for the Iceberg catalog, by default "default"
+        table_name : str, optional
+            Name of the Iceberg table, by default "my_iceberg_table"
+        partition_field_name : str, optional
+            Name of the field to partition on, by default "group"
+
+        """
         self.parquet_input = parquet_input
         self.output_dir = output_dir
         self.namespace = namespace
@@ -33,11 +53,28 @@ class IcebergPipeline:
             self.catalog_config = catalog_config
 
     def get_catalog(self):
+        """
+        Get an Iceberg catalog object from the configuration stored in the `catalog_config` field.
+
+        Returns
+        -------
+        catalog : pyiceberg.catalog.Catalog
+            An Iceberg catalog object
+
+        """
         config = self.catalog_config.copy()
         catalog_type = config.pop("catalog_type", "sqlite")
         return load_catalog(catalog_type, **config)
     
     def infer_schema(self):
+        """
+        Infer a PyIceberg schema for the table from one of the partitioned output files.
+
+        Returns
+        -------
+        schema : pyiceberg.schema.Schema
+            An Iceberg schema object
+        """
         sample_files = glob.glob(os.path.join(self.output_dir, "**", "*.parquet"), recursive=True)
         if not sample_files:
             raise ValueError("No parquet files found.")
@@ -59,6 +96,23 @@ class IcebergPipeline:
     
     def run_pipeline(self):
         # Clear the output directory to avoid duplicate processing.
+        """
+        Run the pipeline to create an Iceberg table from the input Parquet file.
+
+        The pipeline consists of the following steps:
+
+        1. Clear the output directory to avoid duplicate processing.
+        2. Use Daft to read the input Parquet file and write partitioned files.
+        3. Load or create the catalog.
+        4. Infer a PyIceberg schema for the table from one of the partitioned output files.
+        5. Determine the field id for the partition field.
+        6. Create the namespace (if it doesn't exist already).
+        7. Create the Iceberg table with the inferred schema and partition spec.
+        8. Read the partitioned files and register them with the Iceberg table.
+
+        The Iceberg table is saved as an instance variable `table` and the catalog is saved as an instance variable `catalog`.
+        """
+
         if os.path.exists(self.output_dir):
             shutil.rmtree(self.output_dir)
         os.makedirs(self.output_dir, exist_ok=True)
@@ -143,6 +197,13 @@ class IcebergPipeline:
         self.catalog = catalog
 
     def print_snapshot_history(self):
+        """
+        Print the snapshot history of the Iceberg table.
+
+        This method is used to inspect the historical snapshots of the
+        Iceberg table. The snapshot history is a list of Snapshot objects
+        that describe the state of the table at different points in time.
+        """
         if not hasattr(self, "table"):
             print("Table not loaded. Run run_pipeline() first.")
             return

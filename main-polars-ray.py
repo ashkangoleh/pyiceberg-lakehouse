@@ -9,10 +9,9 @@ from pyiceberg.partitioning import PartitionSpec, PartitionField, INITIAL_PARTIT
 from pyiceberg.transforms import IdentityTransform
 import ray
 
-ray.init(address="ray://localhost:10001")
 
 class IcebergPipeline:
-    def __init__(self, parquet_input="large_dataset.parquet",
+    def __init__(self, parquet_input="new_large_dataset.parquet",
                  output_dir="./output_partitioned_parquet",
                  catalog_config=None,
                  namespace="default", 
@@ -155,6 +154,42 @@ def run_pipeline_remote():
     return "Pipeline execution complete."
 
 if __name__ == "__main__":
+    ray.init(address="ray://localhost:10001",runtime_env={
+        "env_vars": {
+            # RAY_NUM_SERVER_CALL_THREAD limits the number of threads that Ray uses
+            # internally for handling server calls (e.g. gRPC calls between workers and the driver).
+            # Setting this to "1" helps reduce thread contention and excessive resource usage,
+            # which can be especially important when running on clusters with many cores.
+            "RAY_NUM_SERVER_CALL_THREAD": "1",
+        },
+        "setup_commands": [
+            # OPENBLAS_NUM_THREADS: Many numerical libraries (like OpenBLAS) use multi-threading for
+            # linear algebra operations. Setting this to 1 forces OpenBLAS to use only a single thread,
+            # which helps prevent oversubscription of CPU cores and reduces virtual memory overhead.
+            "export OPENBLAS_NUM_THREADS=1",
+            
+            # OMP_NUM_THREADS: OpenMP controls the number of threads for parallel regions in many C/C++ libraries.
+            # By limiting it to 1, you ensure that parallel loops within these libraries do not spawn extra threads,
+            # which can otherwise lead to performance degradation or excessive resource usage.
+            "export OMP_NUM_THREADS=1",
+            
+            # MKL_NUM_THREADS: Intel's Math Kernel Library (MKL) also supports multi-threading for
+            # optimized numerical computations. Restricting it to a single thread avoids potential
+            # conflicts with Ray's parallelism and helps control overall thread count.
+            "export MKL_NUM_THREADS=1",
+            
+            # TF_NUM_INTEROP_THREADS: TensorFlow uses inter-op parallelism to distribute independent operations
+            # across multiple threads. Limiting this to 1 reduces the risk of creating too many threads,
+            # which could lead to inefficient CPU usage or resource exhaustion in a distributed environment.
+            "export TF_NUM_INTEROP_THREADS=1",
+            
+            # TF_NUM_INTRAOP_THREADS: TensorFlow also uses intra-op parallelism for splitting individual operations
+            # across multiple threads. Setting this to 1 ensures that each operation is executed in a single thread,
+            # which is useful when you want to keep thread counts predictable and avoid interference with Ray's scheduling.
+            "export TF_NUM_INTRAOP_THREADS=1"
+        ]
+    }, object_store_memory=10 * 1024 * 1024 * 1024
+    )
     # Execute the pipeline remotely.
-    result = ray.get(run_pipeline_remote.remote())
+    result = ray.get(run_pipeline_remote.remote(), timeout=600)
     print(result)
