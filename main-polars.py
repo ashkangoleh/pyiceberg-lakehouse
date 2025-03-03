@@ -1,3 +1,10 @@
+"""
+This module implements an IcebergPipeline that partitions a Parquet file using an unstructured folder approach.
+Instead of creating separate folders for each partition value, all partitioned files are saved in a single output
+directory with filenames that include the partition value. The partition information is maintained in the metadata
+of the Iceberg table.
+"""
+
 import os
 import glob
 import pyarrow.parquet as pq
@@ -9,30 +16,29 @@ from pyiceberg.partitioning import PartitionSpec, PartitionField, INITIAL_PARTIT
 from pyiceberg.transforms import IdentityTransform
 
 class IcebergPipeline:
-    def __init__(self, parquet_input="large_dataset.parquet",
+    def __init__(self, parquet_input="./data/large_dataset.parquet",
                  output_dir="./output_partitioned_parquet",
                  catalog_config=None,
                  namespace="default", 
                  table_name="my_iceberg_table",
-                 partition_field_name="group"
-                ):
+                 partition_field_name="group"):
         """
         Initialize an IcebergPipeline.
-        
+
         Parameters
         ----------
         parquet_input : str, optional
-            Input Parquet file, by default "large_dataset.parquet"
+            Input Parquet file (default is "large_dataset.parquet")
         output_dir : str, optional
-            Output directory for partitioned Parquet files, by default "./output_partitioned_parquet"
+            Directory where the partitioned Parquet files will be saved (default is "./output_partitioned_parquet")
         catalog_config : dict, optional
-            Configuration for the Iceberg catalog, by default None (uses default values)
+            Configuration for the Iceberg catalog (default uses pre-set configuration)
         namespace : str, optional
-            Namespace for the Iceberg catalog, by default "default"
+            Namespace for the Iceberg catalog (default is "default")
         table_name : str, optional
-            Name of the Iceberg table, by default "my_iceberg_table"
+            Name of the Iceberg table (default is "my_iceberg_table")
         partition_field_name : str, optional
-            Name of the field to partition on, by default "group"
+            Name of the field to partition on (default is "group")
         """
         self.parquet_input = parquet_input
         self.output_dir = output_dir
@@ -50,8 +56,8 @@ class IcebergPipeline:
 
     def get_catalog(self):
         """
-        Get an Iceberg catalog object from the configuration stored in the `catalog_config` field.
-        
+        Retrieve the Iceberg catalog based on the provided configuration.
+
         Returns
         -------
         catalog : pyiceberg.catalog.Catalog
@@ -63,17 +69,17 @@ class IcebergPipeline:
     
     def infer_schema(self):
         """
-        Infer a PyIceberg schema for the table from one of the partitioned output files.
+        Infer the Iceberg schema from one of the partitioned output files.
 
         Returns
         -------
         schema : pyiceberg.schema.Schema
-            An Iceberg schema object
+            An inferred Iceberg schema based on the Parquet file sample.
         """
-        # Sample files by globbing for Parquet files under the output directory.
-        sample_files = glob.glob(os.path.join(self.output_dir, "**", "*.parquet"), recursive=True)
+        # Search for Parquet files in the output directory
+        sample_files = glob.glob(os.path.join(self.output_dir, "*.parquet"))
         if not sample_files:
-            raise ValueError("No parquet files found.")
+            raise ValueError("No Parquet files found.")
         sample_schema = pq.read_schema(sample_files[0])
         fields = []
         fid = 1
@@ -92,42 +98,28 @@ class IcebergPipeline:
     
     def run_pipeline(self):
         """
-        Run the pipeline to process and partition the input Parquet file,
-        create an Iceberg catalog, and register the partitioned files.
-
-        The pipeline performs the following steps:
-        1. Reads the input Parquet file using Polars.
-        2. Partitions the data by the specified column, creating separate
-        directories for each unique partition value.
-        3. Loads or creates the Iceberg catalog and infers the schema.
-        4. Creates the namespace and Iceberg table with the inferred schema
-        and partition specification.
-        5. Reads the partitioned Parquet files, applying a forced schema, and
-        appends the data to the Iceberg table.
-
-        After executing, the `table` and `catalog` instance variables are set.
-
-        Raises
-        ------
-        ValueError
-            If the partition field is not found in the inferred schema.
+        Run the full pipeline:
+        1. Read the input Parquet file using Polars.
+        2. Partition the data by the specified column and save files in a single directory with unique filenames.
+        3. Load or create the Iceberg catalog and infer the schema.
+        4. Create the namespace and Iceberg table with the inferred schema and partition specification.
+        5. Read the partitioned Parquet files, apply a forced schema, and append the data to the Iceberg table.
         """
         # Read the input Parquet file
         df = pl.read_parquet(self.parquet_input)
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Partition the data by the specified column (e.g. "group")
+        # Get unique values from the partition column (e.g., "group")
         unique_vals = df.select(self.partition_field_name).unique().to_series().to_list()
-        # Loop over the unique values and partition the data
+        
+        # Save partition files in a single directory with unique filenames including partition value
         for val in unique_vals:
             partition_df = df.filter(pl.col(self.partition_field_name) == val)
-            partition_dir = os.path.join(self.output_dir, f"{self.partition_field_name}={val}")
-            os.makedirs(partition_dir, exist_ok=True)
-            output_file = os.path.join(partition_dir, "data.parquet")
+            output_file = os.path.join(self.output_dir, f"data_{self.partition_field_name}_{val}.parquet")
             partition_df.write_parquet(output_file)
-
-        print(f"Partitioned Parquet files written to: {self.output_dir}")
-
+        
+        print(f"Parquet files have been saved in directory: {self.output_dir}")
+        
         # Load or create the catalog
         catalog = self.get_catalog()
         os.makedirs(self.catalog_config["warehouse"], exist_ok=True)
@@ -138,8 +130,9 @@ class IcebergPipeline:
                 pfid = field.field_id
                 break
         if pfid is None:
-            raise ValueError(f"Partition field '{self.partition_field_name}' not found in inferred schema.")
-        # Create the namespace and Iceberg table
+            raise ValueError(f"Partition field '{self.partition_field_name}' not found in the schema.")
+        
+        # Create partition field and partition specification
         partition_field = PartitionField(
             name=self.partition_field_name,
             source_id=pfid,
@@ -158,30 +151,26 @@ class IcebergPipeline:
         table = catalog.create_table(table_identifier, schema=schema, partition_spec=spec)
         print(f"Iceberg table {table_identifier} created with partition spec on '{self.partition_field_name}'.")
 
-        parquet_files = glob.glob(os.path.join(self.output_dir, "**", "*.parquet"), recursive=True)
+        # Search for Parquet files in the output directory
+        parquet_files = glob.glob(os.path.join(self.output_dir, "*.parquet"))
         print(f"Found {len(parquet_files)} Parquet files to register.")
 
-        # Define the forced schema for reading files
+        # Define a forced schema for reading files
         read_schema = pa.schema([
             pa.field("id", pa.int32(), nullable=False),
             pa.field("group", pa.string(), nullable=False),
             pa.field("value1", pa.float32(), nullable=False),
             pa.field("value2", pa.int32(), nullable=False)
         ])
-        # Read the Parquet files and append to the Iceberg table
+        # Read the Parquet files and append data to the Iceberg table
         for file_path in parquet_files:
             try:
-                # Read the Parquet file
                 pf = pq.ParquetFile(file_path)
-                # Apply the forced schema
                 arrow_table = pf.read()
-                # Cast the Parquet data to the forced schema
+                # Check and decode if the partition field is a dictionary type
                 gf = arrow_table.schema.field(self.partition_field_name)
-                # If the partition field is a dictionary, decode it
                 if pa.types.is_dictionary(gf.type):
-                    # Get the index of the partition field
                     idx = arrow_table.schema.get_field_index(self.partition_field_name)
-                    # Decode the dictionary
                     arrow_table = arrow_table.set_column(
                         idx, 
                         self.partition_field_name,
@@ -193,7 +182,7 @@ class IcebergPipeline:
                 continue
             table.append(arrow_table)
             print(f"Appended data from file: {file_path} (rows: {arrow_table.num_rows}, size: {os.path.getsize(file_path)} bytes)")
-        
+
         print("\n--- Iceberg Table Metadata ---")
         print("Schema:")
         print(table.schema())
@@ -203,19 +192,11 @@ class IcebergPipeline:
     def print_snapshot_history(self):
         """
         Print the snapshot history of the Iceberg table.
-
-        This method is used to inspect the historical snapshots of the
-        Iceberg table. The snapshot history is a list of Snapshot objects
-        that describe the state of the table at different points in time.
-
-        If the `table` attribute is not set, it prints a message and does
-        nothing. Call `run_pipeline()` first to set the `table` attribute.
         """
         if not hasattr(self, "table"):
             print("Table not loaded. Run run_pipeline() first.")
             return
         print("\nSnapshot History:")
-        # Loop over the snapshots and print them.
         for snap in self.table.history():
             print(snap)
 
