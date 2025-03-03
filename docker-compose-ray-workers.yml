@@ -1,6 +1,5 @@
 services:
   ray-head:
-    # image: rayproject/ray:latest
     build:
       context: .
       dockerfile: Dockerfile-ray
@@ -11,15 +10,14 @@ services:
       --port=6379
       --dashboard-host=0.0.0.0
       --dashboard-port=8265
-      --dashboard-agent-listen-port=52365
       --ray-client-server-port=10001
       --block
     ports:
       - "8265:8265"   # Ray Dashboard
       - "6379:6379"   # Redis communication port
       - "10001:10001" # Ray Client
-      - "52365:52365" # Dashboard agent port
-    shm_size: "2gb"
+      # - "52365:52365" # Dashboard agent port
+    shm_size: "8gb"
     networks:
       - proxy
     environment:
@@ -32,17 +30,17 @@ services:
       context: .
       dockerfile: Dockerfile-ray
     deploy:
-      replicas: 3  # Number of worker replicas
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: "4g"
+      replicas: 1  # Number of worker replicas
+      # resources:
+      #   limits:
+      #     cpus: "2.0"
+      #     memory: "4g"
     command: >
       ray start --address=ray-head:6379 --block --dashboard-agent-listen-port=52365
     depends_on:
       ray-head:
         condition: service_healthy
-    shm_size: "2gb"
+    shm_size: "8gb"
     networks:
       - proxy
     environment:
