@@ -162,27 +162,28 @@ class IcebergPipeline:
             pa.field("value1", pa.float32(), nullable=False),
             pa.field("value2", pa.int32(), nullable=False)
         ])
-        # Read the Parquet files and append data to the Iceberg table
-        for file_path in parquet_files:
-            try:
-                pf = pq.ParquetFile(file_path)
-                arrow_table = pf.read()
-                # Check and decode if the partition field is a dictionary type
-                gf = arrow_table.schema.field(self.partition_field_name)
-                if pa.types.is_dictionary(gf.type):
-                    idx = arrow_table.schema.get_field_index(self.partition_field_name)
-                    arrow_table = arrow_table.set_column(
-                        idx, 
-                        self.partition_field_name,
-                        arrow_table[self.partition_field_name].dictionary_decode()
-                    )
-                arrow_table = arrow_table.cast(read_schema)
-            except Exception as e:
-                print(f"Error reading or casting file {file_path}: {e}")
-                continue
-            table.append(arrow_table)
-            print(f"Appended data from file: {file_path} (rows: {arrow_table.num_rows}, size: {os.path.getsize(file_path)} bytes)")
-
+        with table.transaction() as txn:
+            # Read the Parquet files and append data to the Iceberg table
+            for file_path in parquet_files:
+                try:
+                    pf = pq.ParquetFile(file_path)
+                    arrow_table = pf.read()
+                    # Check and decode if the partition field is a dictionary type
+                    gf = arrow_table.schema.field(self.partition_field_name)
+                    if pa.types.is_dictionary(gf.type):
+                        idx = arrow_table.schema.get_field_index(self.partition_field_name)
+                        arrow_table = arrow_table.set_column(
+                            idx, 
+                            self.partition_field_name,
+                            arrow_table[self.partition_field_name].dictionary_decode()
+                        )
+                    arrow_table = arrow_table.cast(read_schema)
+                except Exception as e:
+                    print(f"Error reading or casting file {file_path}: {e}")
+                    continue
+                txn.append(arrow_table)
+                print(f"Appended data from file: {file_path} (rows: {arrow_table.num_rows}, size: {os.path.getsize(file_path)} bytes)")
+            txn.commit_transaction()
         print("\n--- Iceberg Table Metadata ---")
         print("Schema:")
         print(table.schema())
